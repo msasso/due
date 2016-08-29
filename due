@@ -1,0 +1,184 @@
+#!/bin/bash
+
+umask 077
+set -o errexit
+set -o nounset
+set -o noclobber
+set -o pipefail
+shopt -s failglob
+shopt -s extglob
+
+SHOW_FILES=1
+ONLY_SHOW_RELEVANT_DATA=1
+LIMIT=$((${LINES:-50} - 4))
+SORT_KEY=1
+XDEV="-xdev"
+
+space_threshold=100000
+files_threshold=10000
+r=0
+
+space_suffixes=(" KB" " MB" " GB" " TB" " PB" " EB")
+#space_suffixes=(k m g t p e)
+files_suffixes=("" k m g)
+
+function die() {
+    echo "$@" >&2
+    exit 1
+}
+
+function humanize() {
+    declare -i size=$1
+    shift
+    suffixes=("${@}")
+    declare -i s_idx=0
+    while [[ $size -ge 1000 ]]
+    do s_idx+=1
+       if [[ $size -lt 9950 ]]
+       then echo "$(((size+50)/1000)).$(((size+50)/100 % 10))${suffixes[$s_idx]}"
+            return 0
+       else size=$(((size+500)/1000))
+       fi
+    done
+    echo "$size${suffixes[$s_idx]}"
+}
+
+function dehumanize() {
+    arg="$1"
+    n="${arg%%*([^0-9])}"
+    suffix="${arg##*([0-9])}"
+    case "${suffix:0:1}" in
+    [kK]) exp=1;;
+    [mM]) exp=2;;
+    [gG]) exp=3;;
+    [tT]) exp=4;;
+    [pP]) exp=5;;
+    [eE]) exp=6;;
+    *) die "Unknown suffix: $suffix";;
+    esac
+    for ((i=0; i<$exp; i++))
+    do n=$((n*1000))
+	  done
+	  echo $n
+}
+
+function parse_cmdline() {
+    while getopts "S:F:l:s:x" o
+    do case "$o" in
+       S) [[ "$OPTARG" =~ ^[0-9]+$ ]] && die "ERROR: no suffix to -S argument"
+       	  [[ "$OPTARG" =~ ^[0-9]+[kKmMgGtTpPeE][bB]?$ ]] || die "ERROR: non-numeric argument to -S"
+          space_threshold=$(dehumanize "$OPTARG")
+          space_threshold=$((space_threshold / 1000))  # => kb
+          ;;
+       F) [[ "$OPTARG" =~ ^[0-9]+$ ]] && die "ERROR: no suffix to -F argument"
+       	  [[ "$OPTARG" =~ ^[0-9]+[kKmMgGtTpPeE]$ ]] || die "ERROR: non-numeric argument to -F"
+          files_threshold=$(dehumanize "$OPTARG")
+          ;;
+       l) [[ "$OPTARG" =~ ^[0-9]+$ ]] || die "ERROR: non-numeric argument to -l"
+          LIMIT=$OPTARG
+          ;;
+       s) case $OPTARG in
+          s) SORT_KEY=1;;
+          f) SORT_KEY=2;;
+          *) die "Unknown sort field '$OPTARG'"
+          esac
+          ;;
+       x) XDEV="";;
+       \?) exit 1;;
+       esac
+    done
+}
+
+[[ ${BASH_VERSINFO[0]} -ge 4 ]] || die "ERROR: this version of bash doesn't support associative arrays. Version 4 or better is required."
+find_version="$(find --version | head -n 1)"
+[[ "$find_version" =~ BusyBox ]] && die "ERROR: busybox is not supported."
+[[ "$find_version" =~ GNU\ findutils ]] || die "ERROR: non findutils versions of find are not supported."
+
+parse_cmdline "$@"
+shift $((OPTIND-1))
+
+if [[ $# -gt 0 && -n "$1" ]]
+then basedir="$1"
+else basedir="."
+fi
+
+declare -iA space files
+declare -i s f
+
+read -r -d '' watch_script <<-'EOF' || :
+  t=0
+  c=${COLUMNS:-80}
+  c=$((c-1))
+  while IFS= read -r f
+  do t2=$(date +%s%N)
+     if [[ $((t2 - t)) -gt 100000000 ]]
+     then t=$t2
+          echo -ne "\033[2K\033[G${f:0:$c}" >&2
+     fi
+  done
+EOF
+
+echo "$(date) Examining filesystem..." >&2
+while read t s && IFS= read -r parent && IFS= read -r name  # file type & disk space used (in kb) / directory / filename
+do if [[ "$name" == "/" ]]  # Corner case: /
+   then fullpath="/"
+        parent="/"
+   elif [[ -z "$parent" ]]  # Corner case: children of /
+   then fullpath="/$name"
+        parent="/"
+   else fullpath="$parent/$name"
+   fi
+   case $t in
+   f) if [[ $SHOW_FILES -gt 0 && $s -ge $space_threshold ]]
+      then space["$fullpath"]+=s
+      else space["$parent"]+=s
+    fi
+    files["$parent"]+=1
+    ;;
+  d) space["$fullpath"]+=s;;
+  *) die "Unknown file type $t for $fullpath";;
+  esac
+done < <(find "$basedir" $XDEV -mindepth 1 \( -type d -fprint /dev/stderr -false \) -or \( -type f -or -type d \) -printf "%y %k\n%h\n%f\n" 2> >(bash -c "$watch_script") || r=$?)
+
+echo -ne "\033[2K\033[G" >&2
+echo "$(date) Analyzing..." >&2
+while IFS= read -r fullpath
+do s=${space["$fullpath"]}
+   f=${files["$fullpath"]:-0}
+   parent="${fullpath%/*}"
+   if [[ -z "$parent" ]]  # Corner case: children of /
+   then parent="/"
+   fi
+   if [[ $s -lt $space_threshold && $f -lt $files_threshold ]]
+   then space["$parent"]+=s
+	    	files["$parent"]+=f
+	    	unset 'space[$fullpath]'
+   fi
+done < <(for p in "${!space[@]}"
+		 do echo "${#p} $p"
+		 done \
+		 | sort -rn \
+		 | sed -e '$d' \
+		 | sed -re 's/^[^ ]* //')
+
+echo "$(date) Done." >&2
+
+printf "%6s  %5s  %s\n" "SPACE" "FILES" "PATH"
+[[ "${#space[@]}" -eq $((LIMIT+1)) ]] && LIMIT=$((LIMIT+1))
+for d in "${!space[@]}"
+do echo "${space[$d]} ${files[$d]:-0} $d"
+done \
+| sort -rn \
+| head -n $LIMIT \
+| while read s f p
+  do if [[ $ONLY_SHOW_RELEVANT_DATA -gt 0 && $s -lt $space_threshold && "$p" != "$basedir" ]]
+     then size_text=""
+     else size_text="$(humanize $s "${space_suffixes[@]}")"
+     fi
+     if [[ $ONLY_SHOW_RELEVANT_DATA -gt 0 && $f -lt $files_threshold && "$p" != "$basedir" ]]
+     then files_text=""
+     else files_text="$(humanize $f "${files_suffixes[@]}")"
+     fi
+     printf "%6s  %5s  %s\n" "$size_text" "$files_text" "$p"
+  done
+[[ "${#space[@]}" -gt $LIMIT ]] && echo "       ($((${#space[@]} - LIMIT)) more entries)"
