@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/bash -i
 
 umask 077
 set -o errexit
@@ -11,6 +11,7 @@ shopt -s extglob
 SHOW_FILES=1
 ONLY_SHOW_RELEVANT_DATA=1
 LIMIT=$((${LINES:-50} - 4))
+WIDTH=$((${COLUMNS:-80} - 1))
 SORT_KEY=1
 XDEV="-xdev"
 
@@ -92,7 +93,7 @@ function parse_cmdline() {
 [[ ${BASH_VERSINFO[0]} -ge 4 ]] || die "ERROR: this version of bash doesn't support associative arrays. Version 4 or better is required."
 find_version="$(find --version | head -n 1)"
 [[ "$find_version" =~ BusyBox ]] && die "ERROR: busybox is not supported."
-[[ "$find_version" =~ GNU\ findutils ]] || die "ERROR: non findutils versions of find are not supported."
+[[ "$find_version" =~ GNU\ findutils ]] || die "ERROR: only GNU findutils versions of find is supported."
 
 parse_cmdline "$@"
 shift $((OPTIND-1))
@@ -107,16 +108,17 @@ declare -i s f
 
 read -r -d '' watch_script <<-'EOF' || :
   t=0
-  c=${COLUMNS:-80}
-  c=$((c-1))
   while IFS= read -r f
   do t2=$(date +%s%N)
      if [[ $((t2 - t)) -gt 100000000 ]]
      then t=$t2
-          echo -ne "\033[2K\033[G${f:0:$c}" >&2
+          echo -ne "\033[2K\033[G${f:0:$WIDTH}" >&2
      fi
   done
 EOF
+
+# HACK: should we export WIDTH instead?
+watch_script="${watch_script//\$WIDTH/$WIDTH}"
 
 echo "$(date) Examining filesystem..." >&2
 while read t s && IFS= read -r parent && IFS= read -r name  # file type & disk space used (in kb) / directory / filename
