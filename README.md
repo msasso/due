@@ -9,7 +9,7 @@ due is du(1), enhanced.
 
 ```
 due [-l limit] [-S space] [-F files] [path]
-   -l limit   Display at most "limit" lines. By default this is $COLUMNS - 4.
+   -l limit   Display at most "limit" lines. By default this is $LINES - 4.
    -S space   Set the threshold to "space". You can use the usual suffixes (for instance 4GB, 1T, and so on...) By default this is 100MB.
    -F files   Set the threshold to "files". You can use standard suffixes (for instance 5k.) By default this is 10k.
    path       The path to evaulate. Current directory by default.
