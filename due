@@ -183,4 +183,7 @@ done \
      fi
      printf "%6s  %5s  %s\n" "$size_text" "$files_text" "$p"
   done
-[[ "${#space[@]}" -gt $LIMIT ]] && echo "       ($((${#space[@]} - LIMIT)) more entries)"
+
+if [[ "${#space[@]}" -gt $LIMIT ]]
+then echo "       ($((${#space[@]} - LIMIT)) more entries)"
+fi
