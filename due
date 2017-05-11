@@ -28,6 +28,7 @@ LIMIT=$((${LINES:-50} - 4))
 WIDTH=$((${COLUMNS:-80} - 1))
 SORT_KEY=1
 XDEV="-xdev"
+PROGRESS=1
 
 space_threshold=100000
 files_threshold=10000
@@ -36,6 +37,10 @@ r=0
 space_suffixes=(" KB" " MB" " GB" " TB" " PB" " EB")
 #space_suffixes=(k m g t p e)
 files_suffixes=("" k m g)
+
+if [[ ! -t 1 ]]
+then PROGRESS=0
+fi
 
 function die() {
     echo "$@" >&2
@@ -120,16 +125,24 @@ fi
 declare -iA space files
 declare -i s f
 
-read -r -d '' watch_script <<-'EOF' || :
-  t=0
-  while IFS= read -r f
-  do t2=$(date +%s%N)
-     if [[ $((t2 - t)) -gt 100000000 ]]
-     then t=$t2
-          echo -ne "\033[2K\033[G${f:0:$WIDTH}" >&2
-     fi
-  done
+if [[ $PROGRESS -gt 0 && "$(uname -o)" != "Cygwin" ]]
+then read -r -d '' watch_script <<-'EOF' || :
+        t=0
+        while IFS= read -r f
+        do t2=$(date +%s%N)
+           if [[ $((t2 - t)) -gt 100000000 ]]
+           then t=$t2
+                echo -ne "\033[2K\033[G${f:0:$WIDTH}" >&2
+           fi
+        done
 EOF
+else read -r -d '' watch_script <<-'EOF' || :
+        t=0
+        while IFS= read -r f
+        do :
+        done
+EOF
+fi
 
 # HACK: should we export WIDTH instead?
 watch_script="${watch_script//\$WIDTH/$WIDTH}"
@@ -157,6 +170,9 @@ do if [[ "$name" == "/" ]]  # Corner case: /
 done < <(find "$basedir" $XDEV -mindepth 1 \( -type d -fprint /dev/stderr -false \) -or \( -type f -or -type d \) -printf "%y %k\n%h\n%f\n" 2> >(bash -c "$watch_script") || r=$?)
 
 echo -ne "\033[2K\033[G" >&2
+
+# TODO: in certain cases parent of $basedir is in $space and needs to be removed, other times it isn't.
+#       Why is that? I need to pay more attention to corner cases
 echo "$(date) Analyzing..." >&2
 while IFS= read -r fullpath
 do s=${space["$fullpath"]}
