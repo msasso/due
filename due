@@ -181,11 +181,9 @@ do s=${space["$fullpath"]}
    if [[ -z "$parent" ]]  # Corner case: children of /
    then parent="/"
    fi
-   if [[ $s -lt $space_threshold && $f -lt $files_threshold ]]
-   then space["$parent"]+=s
-	    	files["$parent"]+=f
-	    	unset 'space[$fullpath]'
-   fi
+   [[ $s -lt $space_threshold ]] && space["$parent"]+=s
+   [[ $f -lt $files_threshold ]] && files["$parent"]+=f
+   [[ $s -lt $space_threshold && $f -lt $files_threshold ]] && unset 'space[$fullpath]'
 done < <(for p in "${!space[@]}"
 		 do echo "${#p} $p"
 		 done \
