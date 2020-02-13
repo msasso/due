@@ -17,7 +17,6 @@
 umask 077
 set -o errexit
 set -o nounset
-set -o noclobber
 set -o pipefail
 shopt -s failglob
 shopt -s extglob
@@ -37,6 +36,9 @@ r=0
 space_suffixes=(" KB" " MB" " GB" " TB" " PB" " EB")
 #space_suffixes=(k m g t p e)
 files_suffixes=("" k m g)
+declare -a paths
+paths=()
+declare -a excludes=(-false)
 
 if [[ ! -t 1 ]]
 then PROGRESS=0
@@ -82,31 +84,71 @@ function dehumanize() {
 	  echo $n
 }
 
+belongs_to() {
+  needle="$1"
+  shift
+  for x; do
+    if [[ "$needle" == "$x" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+included_in() {
+  belongs_to "$@"
+}
+
 function parse_cmdline() {
-    while getopts "S:F:l:s:x" o
-    do case "$o" in
-       S) [[ "$OPTARG" =~ ^[0-9]+$ ]] && die "ERROR: no suffix to -S argument"
-       	  [[ "$OPTARG" =~ ^[0-9]+[kKmMgGtTpPeE][bB]?$ ]] || die "ERROR: non-numeric argument to -S"
-          space_threshold=$(dehumanize "$OPTARG")
-          space_threshold=$((space_threshold / 1000))  # => kb
-          ;;
-       F) [[ "$OPTARG" =~ ^[0-9]+$ ]] && die "ERROR: no suffix to -F argument"
-       	  [[ "$OPTARG" =~ ^[0-9]+[kKmMgGtTpPeE]$ ]] || die "ERROR: non-numeric argument to -F"
-          files_threshold=$(dehumanize "$OPTARG")
-          ;;
-       l) [[ "$OPTARG" =~ ^[0-9]+$ ]] || die "ERROR: non-numeric argument to -l"
-          LIMIT=$OPTARG
-          ;;
-       s) case $OPTARG in
+  GETOPT="$(getopt -o S:F:l:s:xX: --longoptions size:,files:,limit:,sort:,xdev,exclude: -n "$(basename "$0")" -- "$@")"
+  eval set -- "$GETOPT"
+
+  while true; do
+    case "$1" in
+      -S|--size)
+        [[ "$2" =~ ^[0-9]+$ ]] && die "ERROR: no suffix to $1 argument"
+        [[ "$2" =~ ^[0-9]+[kKmMgGtTpPeE][bB]?$ ]] || die "ERROR: non-numeric argument to $1"
+        space_threshold=$(dehumanize "$2")
+        space_threshold=$((space_threshold / 1000))  # => kb
+        shift 2
+        ;;
+      -F|--files)
+        # [[ "$2" =~ ^[0-9]+$ ]] && die "ERROR: no suffix to $1 argument"
+        [[ "$2" =~ ^[0-9]+[kKmMgGtTpPeE]?$ ]] || die "ERROR: non-numeric argument to $1"
+        if [[ "$2" =~ ^[0-9]+$ ]]; then
+          files_threshold="$2"
+        else
+          files_threshold=$(dehumanize "$2")
+        fi
+        SORT_KEY=2
+        shift 2
+        ;;
+      -l|--limit)
+        LIMIT=$2
+        shift 2
+        ;;
+      -s|--sort)
+        case $2 in
           s) SORT_KEY=1;;
           f) SORT_KEY=2;;
-          *) die "Unknown sort field '$OPTARG'"
-          esac
-          ;;
-       x) XDEV="";;
-       \?) exit 1;;
-       esac
-    done
+          *) die "Unknown sort field '$2'"
+        esac
+        shift 2
+        ;;
+      -x|--xdev)
+        XDEV=""
+        shift
+        ;;
+      -X|--exclude)
+        excludes+=(-or -path "$2")
+        shift 2
+        ;;
+      --) shift; break;;
+      -*) die "Internal error: unknown option: $1";;
+      *) die "Internal error: getopt not working as expected";;
+    esac
+  done
+  paths=("$@")
 }
 
 [[ ${BASH_VERSINFO[0]} -ge 4 ]] || die "ERROR: this version of bash doesn't support associative arrays. Version 4 or better is required."
@@ -115,12 +157,12 @@ find_version="$(find --version | head -n 1)"
 [[ "$find_version" =~ GNU\ findutils ]] || die "ERROR: only GNU findutils versions of find is supported."
 
 parse_cmdline "$@"
-shift $((OPTIND-1))
 
-if [[ $# -gt 0 && -n "$1" ]]
-then basedir="$1"
-else basedir="."
+if [[ ${#paths[@]} -eq 0 ]]
+then paths+=(.)
 fi
+
+echo "$space_threshold $files_threshold $LIMIT $XDEV -- ${paths[@]} -- ${excludes[@]}" >&2
 
 declare -iA space files
 declare -i s f
@@ -167,7 +209,7 @@ do if [[ "$name" == "/" ]]  # Corner case: /
   d) space["$fullpath"]+=s;;
   *) die "Unknown file type $t for $fullpath";;
   esac
-done < <(find "$basedir" $XDEV -mindepth 1 \( -type d -fprint /dev/stderr -false \) -or \( -type f -or -type d \) -printf "%y %k\n%h\n%f\n" 2> >(bash -c "$watch_script") || r=$?)
+done < <(find "${paths[@]}" $XDEV -mindepth 1 -not \( \( "${excludes[@]:-}" \) -prune \) \( -type d -fprint /dev/stderr -false \) -or \( -type f -or -type d \) -printf "%y %k\n%h\n%f\n" 2> >(bash -c "$watch_script") || r=$?)
 
 echo -ne "\033[2K\033[G" >&2
 
@@ -201,11 +243,11 @@ done \
 | sort -rn \
 | head -n $LIMIT \
 | while read s f p
-  do if [[ $ONLY_SHOW_RELEVANT_DATA -gt 0 && $s -lt $space_threshold && "$p" != "$basedir" ]]
+  do if [[ $ONLY_SHOW_RELEVANT_DATA -gt 0 && $s -lt $space_threshold ]] && ! included_in "$p" "${paths[@]}"
      then size_text=""
      else size_text="$(humanize $s "${space_suffixes[@]}")"
      fi
-     if [[ $ONLY_SHOW_RELEVANT_DATA -gt 0 && $f -lt $files_threshold && "$p" != "$basedir" ]]
+     if [[ $ONLY_SHOW_RELEVANT_DATA -gt 0 && $f -lt $files_threshold ]] && ! included_in "$p" "${paths[@]}"
      then files_text=""
      else files_text="$(humanize $f "${files_suffixes[@]}")"
      fi
