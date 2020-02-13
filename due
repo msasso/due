@@ -1,6 +1,6 @@
 #!/bin/bash -i
 
-# Copyright 2016, 2017 Matteo Sasso
+# Copyright 2016, 2020 Matteo Sasso
 
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -39,6 +39,7 @@ files_suffixes=("" k m g)
 declare -a paths
 paths=()
 declare -a excludes=(-false)
+declare -a exclude_tags=(-false)
 
 if [[ ! -t 1 ]]
 then PROGRESS=0
@@ -100,7 +101,7 @@ included_in() {
 }
 
 function parse_cmdline() {
-  GETOPT="$(getopt -o S:F:l:s:xX: --longoptions size:,files:,limit:,sort:,xdev,exclude: -n "$(basename "$0")" -- "$@")"
+  GETOPT="$(getopt -o S:F:l:s:xX:T: --longoptions size:,files:,limit:,sort:,xdev,exclude:,exclude-tag: -n "$(basename "$0")" -- "$@")"
   eval set -- "$GETOPT"
 
   while true; do
@@ -143,6 +144,10 @@ function parse_cmdline() {
         excludes+=(-or -path "$2")
         shift 2
         ;;
+      -T|--exclude-tag)
+        exclude_tags+=(-or -execdir test -e {}/"$2" \;)
+        shift 2
+        ;;
       --) shift; break;;
       -*) die "Internal error: unknown option: $1";;
       *) die "Internal error: getopt not working as expected";;
@@ -162,7 +167,7 @@ if [[ ${#paths[@]} -eq 0 ]]
 then paths+=(.)
 fi
 
-echo "$space_threshold $files_threshold $LIMIT $XDEV -- ${paths[@]} -- ${excludes[@]}" >&2
+# echo "$space_threshold $files_threshold $LIMIT $XDEV -- ${paths[@]} -- ${excludes[@]}" >&2
 
 declare -iA space files
 declare -i s f
@@ -209,7 +214,7 @@ do if [[ "$name" == "/" ]]  # Corner case: /
   d) space["$fullpath"]+=s;;
   *) die "Unknown file type $t for $fullpath";;
   esac
-done < <(find "${paths[@]}" $XDEV -mindepth 1 -not \( \( "${excludes[@]:-}" \) -prune \) \( -type d -fprint /dev/stderr -false \) -or \( -type f -or -type d \) -printf "%y %k\n%h\n%f\n" 2> >(bash -c "$watch_script") || r=$?)
+done < <(find "${paths[@]}" $XDEV -mindepth 1 -not \( \( "${exclude_tags[@]:-}" \) -prune \) -not \( \( "${excludes[@]:-}" \) -prune \) \( -type d -fprint /dev/stderr -false \) -or \( -type f -or -type d \) -printf "%y %k\n%h\n%f\n" 2> >(bash -c "$watch_script") || r=$?)
 
 echo -ne "\033[2K\033[G" >&2
 
